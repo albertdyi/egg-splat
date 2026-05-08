@@ -1,0 +1,779 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Egg Splat Demo</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden;
+    background: #87ceeb;
+    font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+    user-select: none; -webkit-user-select: none;
+    touch-action: manipulation;
+  }
+  #canvas-container { width: 100%; height: 100%; }
+  #health-bar {
+    position: absolute;
+    transform: translate(-50%, -100%);
+    display: flex;
+    gap: 3px;
+    background: rgba(0,0,0,0.35);
+    padding: 4px;
+    border-radius: 6px;
+    pointer-events: none;
+    transition: opacity 0.3s;
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+  }
+  .segment {
+    width: 18px; height: 12px;
+    background: #2ecc40;
+    border-radius: 2px;
+    transition: background 0.2s;
+    box-shadow: inset 0 -2px 0 rgba(0,0,0,0.25);
+  }
+  .segment.empty {
+    background: #444 !important;
+    box-shadow: inset 0 2px 3px rgba(0,0,0,0.4);
+  }
+  #reset-button {
+    position: absolute;
+    bottom: 36px;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 14px 36px;
+    background: linear-gradient(180deg, #ffd966 0%, #f5b700 100%);
+    color: #2a1a00;
+    border: 3px solid #b8860b;
+    border-radius: 10px;
+    font-size: 16px;
+    font-weight: 800;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    cursor: pointer;
+    display: none;
+    box-shadow: 0 6px 18px rgba(0,0,0,0.35);
+    transition: transform 0.15s, box-shadow 0.15s;
+    font-family: inherit;
+  }
+  #reset-button:hover {
+    transform: translateX(-50%) translateY(-2px);
+    box-shadow: 0 8px 22px rgba(0,0,0,0.4);
+  }
+  #reset-button:active {
+    transform: translateX(-50%) translateY(0);
+  }
+  #title {
+    position: absolute;
+    top: 22px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: white;
+    text-shadow: 0 2px 6px rgba(0,0,0,0.4);
+    font-size: 13px;
+    letter-spacing: 4px;
+    text-transform: uppercase;
+    opacity: 0.85;
+    font-weight: 600;
+  }
+</style>
+</head>
+<body>
+<div id="canvas-container"></div>
+<div id="title">Tap the Egg</div>
+<div id="health-bar"></div>
+<button id="reset-button">↻ Reset</button>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(function() {
+  const container = document.getElementById('canvas-container');
+  const healthBarEl = document.getElementById('health-bar');
+  const resetBtn = document.getElementById('reset-button');
+
+  // ---------- Scene & background ----------
+  const scene = new THREE.Scene();
+
+  // Sky gradient via canvas texture
+  const skyCanvas = document.createElement('canvas');
+  skyCanvas.width = 4; skyCanvas.height = 256;
+  const skyCtx = skyCanvas.getContext('2d');
+  const skyGrad = skyCtx.createLinearGradient(0, 0, 0, 256);
+  skyGrad.addColorStop(0,    '#3a7bd5');
+  skyGrad.addColorStop(0.55, '#83b8e8');
+  skyGrad.addColorStop(1,    '#d4ebf7');
+  skyCtx.fillStyle = skyGrad;
+  skyCtx.fillRect(0, 0, 4, 256);
+  scene.background = new THREE.CanvasTexture(skyCanvas);
+
+  // ---------- Camera ----------
+  const camera = new THREE.PerspectiveCamera(40, window.innerWidth / window.innerHeight, 0.1, 100);
+  camera.position.set(0, 3.0, 5.2);
+  camera.lookAt(0, 1.0, 0);
+
+  // ---------- Renderer ----------
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.outputEncoding = THREE.sRGBEncoding;
+  container.appendChild(renderer.domElement);
+
+  // ---------- Lights ----------
+  scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+  scene.add(new THREE.HemisphereLight(0xbfdcff, 0x6a5040, 0.35));
+
+  const sun = new THREE.DirectionalLight(0xfff2d6, 1.15);
+  sun.position.set(5, 8, 4);
+  sun.castShadow = true;
+  sun.shadow.mapSize.width = 2048;
+  sun.shadow.mapSize.height = 2048;
+  sun.shadow.camera.near = 0.5;
+  sun.shadow.camera.far = 30;
+  sun.shadow.camera.left = -5;
+  sun.shadow.camera.right = 5;
+  sun.shadow.camera.top = 5;
+  sun.shadow.camera.bottom = -5;
+  sun.shadow.bias = -0.0005;
+  scene.add(sun);
+
+  // ---------- Cast iron pan surface ----------
+  function makeIronTexture() {
+    const c = document.createElement('canvas');
+    c.width = 1024; c.height = 1024;
+    const ctx = c.getContext('2d');
+    // Base dark
+    ctx.fillStyle = '#1f1a16';
+    ctx.fillRect(0, 0, 1024, 1024);
+    // Tiny speckles
+    for (let i = 0; i < 30000; i++) {
+      const x = Math.random() * 1024;
+      const y = Math.random() * 1024;
+      const r = Math.random() * 1.4 + 0.3;
+      const dark = Math.random() < 0.6;
+      ctx.fillStyle = dark
+        ? `rgba(0,0,0,${0.25 + Math.random()*0.45})`
+        : `rgba(110,95,75,${0.04 + Math.random()*0.18})`;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI*2);
+      ctx.fill();
+    }
+    // Larger soft smudges
+    for (let i = 0; i < 400; i++) {
+      const x = Math.random() * 1024;
+      const y = Math.random() * 1024;
+      const r = Math.random() * 80 + 20;
+      const grad = ctx.createRadialGradient(x, y, 0, x, y, r);
+      const dark = Math.random() < 0.7;
+      const color = dark ? '20,15,10' : '80,65,50';
+      grad.addColorStop(0, `rgba(${color},0.18)`);
+      grad.addColorStop(1, `rgba(${color},0)`);
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI*2);
+      ctx.fill();
+    }
+    const tex = new THREE.CanvasTexture(c);
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.anisotropy = 8;
+    return tex;
+  }
+
+  const ironTex = makeIronTexture();
+  ironTex.repeat.set(1.5, 1.5);
+
+  const panGeo = new THREE.CircleGeometry(7, 96);
+  const panMat = new THREE.MeshStandardMaterial({
+    map: ironTex,
+    color: 0xffffff,
+    roughness: 0.78,
+    metalness: 0.35
+  });
+  const pan = new THREE.Mesh(panGeo, panMat);
+  pan.rotation.x = -Math.PI/2;
+  pan.receiveShadow = true;
+  scene.add(pan);
+
+  // ---------- Egg ----------
+  const eggGroup = new THREE.Group();
+  const EGG_Y = 0.78; // bottom of rounded base touches the pan
+  eggGroup.position.y = EGG_Y;
+  scene.add(eggGroup);
+
+  // Build egg shape from real chicken egg proportions:
+  //   - aspect ratio ~1.4 (height : width)
+  //   - widest point ~43% up from the bottom
+  //   - BOTTOM is rounded (half-ellipsoid — vertical tangent at the south pole)
+  //   - TOP is a parabolic taper to a point
+  //   - Halves meet at the equator with matching horizontal tangent (no crease)
+  const eggGeo = new THREE.SphereGeometry(1.0, 96, 64);
+  const positions = eggGeo.attributes.position;
+
+  const MAX_RADIUS    = 0.65;   // egg half-width at the widest point
+  const BOTTOM_HEIGHT = 0.78;   // distance from widest point down to bottom
+  const TOP_HEIGHT    = 1.05;   // distance from widest point up to point
+  // Total height ≈ 1.83, max width = 1.30 → aspect ratio ≈ 1.41
+
+  for (let i = 0; i < positions.count; i++) {
+    const sx = positions.getX(i);
+    const sy = positions.getY(i);
+    const sz = positions.getZ(i);
+
+    // Linear map sphere-y (-1..1) to egg-y (-BOTTOM..+TOP)
+    const y_egg = (sy + 1) * 0.5 * (BOTTOM_HEIGHT + TOP_HEIGHT) - BOTTOM_HEIGHT;
+
+    // Egg radius at this height
+    let r_egg;
+    if (y_egg <= 0) {
+      // Bottom half: half-ellipse, gives a rounded bottom (vertical tangent at y=-BOTTOM)
+      const u = y_egg / BOTTOM_HEIGHT;
+      r_egg = MAX_RADIUS * Math.sqrt(Math.max(0, 1 - u*u));
+    } else {
+      // Top half: half-ellipse with a taller vertical axis (TOP_HEIGHT > BOTTOM_HEIGHT).
+      // Same form as the bottom → also has a vertical tangent at the tip → rounded,
+      // not pointed. The longer semi-axis just makes the top look more elongated.
+      const u = y_egg / TOP_HEIGHT;
+      r_egg = MAX_RADIUS * Math.sqrt(Math.max(0, 1 - u*u));
+    }
+
+    // Scale (sx, sz) to the new radius, preserving longitude
+    const sr = Math.sqrt(sx*sx + sz*sz);
+    if (sr > 1e-6) {
+      const scale = r_egg / sr;
+      positions.setX(i, sx * scale);
+      positions.setZ(i, sz * scale);
+    }
+    // (At the poles sx=sz=0, leave unchanged)
+    positions.setY(i, y_egg);
+  }
+  positions.needsUpdate = true;
+  eggGeo.computeVertexNormals();
+
+  function makeShellTexture() {
+    const c = document.createElement('canvas');
+    c.width = 512; c.height = 512;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#f7eed7';
+    ctx.fillRect(0, 0, 512, 512);
+    for (let i = 0; i < 1500; i++) {
+      const x = Math.random() * 512;
+      const y = Math.random() * 512;
+      const r = Math.random() * 1.3 + 0.2;
+      ctx.fillStyle = `rgba(168,135,90,${0.05 + Math.random()*0.18})`;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI*2);
+      ctx.fill();
+    }
+    return new THREE.CanvasTexture(c);
+  }
+
+  const shellMat = new THREE.MeshStandardMaterial({
+    map: makeShellTexture(),
+    color: 0xfaf2dd,
+    roughness: 0.55,
+    metalness: 0.04
+  });
+  const eggMesh = new THREE.Mesh(eggGeo, shellMat);
+  eggMesh.castShadow = true;
+  eggMesh.receiveShadow = true;
+  eggGroup.add(eggMesh);
+
+  // ---------- Game state ----------
+  const MAX_HP = 8;
+  let hp = MAX_HP;
+  let alive = true;
+
+  function buildHealthBar() {
+    healthBarEl.innerHTML = '';
+    for (let i = 0; i < MAX_HP; i++) {
+      const seg = document.createElement('div');
+      seg.className = 'segment';
+      healthBarEl.appendChild(seg);
+    }
+  }
+
+  function updateHealthBar() {
+    const segs = healthBarEl.querySelectorAll('.segment');
+    segs.forEach((seg, i) => {
+      if (i < hp) {
+        seg.classList.remove('empty');
+        if (hp <= 2)      seg.style.background = '#e74c3c';
+        else if (hp <= 4) seg.style.background = '#f39c12';
+        else              seg.style.background = '#2ecc40';
+      } else {
+        seg.classList.add('empty');
+        seg.style.background = '';
+      }
+    });
+  }
+
+  const healthAnchor = new THREE.Vector3();
+  function positionHealthBar() {
+    if (!alive) {
+      healthBarEl.style.opacity = '0';
+      return;
+    }
+    healthBarEl.style.opacity = '1';
+    healthAnchor.set(eggGroup.position.x, eggGroup.position.y + 1.4, eggGroup.position.z);
+    healthAnchor.project(camera);
+    const x = (healthAnchor.x * 0.5 + 0.5) * window.innerWidth;
+    const y = (-healthAnchor.y * 0.5 + 0.5) * window.innerHeight;
+    healthBarEl.style.left = x + 'px';
+    healthBarEl.style.top  = y + 'px';
+  }
+
+  // ---------- Particles (spurt) ----------
+  const particles = [];
+  const GRAVITY = -16;
+
+  function spawnSpurt(worldPos, normal) {
+    // Whites — random horizontal direction with strong upward bias.
+    // The hit normal isn't used here on purpose: real cracking eggs splatter
+    // every which way, not as a directed jet away from the impact.
+    for (let i = 0; i < 14; i++) {
+      const r = 0.04 + Math.random()*0.03;
+      const geo = new THREE.SphereGeometry(r, 8, 8);
+      const mat = new THREE.MeshStandardMaterial({
+        color: 0xfff8e8,
+        transparent: true, opacity: 0.9,
+        roughness: 0.2, metalness: 0
+      });
+      const m = new THREE.Mesh(geo, mat);
+      m.position.copy(worldPos);
+      const angle = Math.random() * Math.PI * 2;
+      const horizSpeed = 1.2 + Math.random()*2.4;
+      const vertSpeed = 2.6 + Math.random()*2.4;
+      const v = new THREE.Vector3(
+        Math.cos(angle) * horizSpeed,
+        vertSpeed,
+        Math.sin(angle) * horizSpeed
+      );
+      scene.add(m);
+      particles.push({ mesh: m, vel: v, type: 'white', size: r });
+    }
+    // Yolk droplets — fewer, slightly slower, same 360° spread
+    for (let i = 0; i < 6; i++) {
+      const r = 0.05 + Math.random()*0.04;
+      const geo = new THREE.SphereGeometry(r, 10, 10);
+      const mat = new THREE.MeshStandardMaterial({
+        color: 0xffaa1a,
+        emissive: 0x3a1f00, emissiveIntensity: 0.5,
+        roughness: 0.25, metalness: 0
+      });
+      const m = new THREE.Mesh(geo, mat);
+      m.position.copy(worldPos);
+      const angle = Math.random() * Math.PI * 2;
+      const horizSpeed = 0.9 + Math.random()*2.0;
+      const vertSpeed = 2.2 + Math.random()*2.2;
+      const v = new THREE.Vector3(
+        Math.cos(angle) * horizSpeed,
+        vertSpeed,
+        Math.sin(angle) * horizSpeed
+      );
+      scene.add(m);
+      particles.push({ mesh: m, vel: v, type: 'yolk', size: r });
+    }
+  }
+
+  // ---------- Splat decals on pan ----------
+  const splats = [];
+  function spawnSplat(x, z, type, size) {
+    const r = (type === 'yolk' ? size * 4.0 : size * 5.5);
+    const geo = new THREE.CircleGeometry(r, 18);
+    // Distort the circle vertices for irregular splat
+    const pos = geo.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      const px = pos.getX(i), py = pos.getY(i);
+      if (px === 0 && py === 0) continue;
+      const wob = 0.65 + Math.random()*0.65;
+      pos.setX(i, px * wob);
+      pos.setY(i, py * wob);
+    }
+    pos.needsUpdate = true;
+    const color = type === 'yolk' ? 0xffaa1a : 0xfff5dc;
+    const mat = new THREE.MeshStandardMaterial({
+      color, transparent: true,
+      opacity: type === 'yolk' ? 0.95 : 0.78,
+      roughness: 0.18, metalness: 0,
+      emissive: type === 'yolk' ? 0x331100 : 0x000000,
+      emissiveIntensity: type === 'yolk' ? 0.25 : 0,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
+      depthWrite: false
+    });
+    const m = new THREE.Mesh(geo, mat);
+    m.rotation.x = -Math.PI/2;
+    // Stack slightly so multiple splats don't z-fight badly
+    m.position.set(x, 0.005 + splats.length * 0.0008, z);
+    scene.add(m);
+    splats.push(m);
+  }
+
+  // ---------- Cracks on the egg ----------
+  const cracks = [];
+  function spawnCrack(localPos, localNormal) {
+    const crackGroup = new THREE.Group();
+    const segCount = 4 + Math.floor(Math.random()*3);
+    const mat = new THREE.MeshBasicMaterial({ color: 0x1a0e04 });
+    for (let i = 0; i < segCount; i++) {
+      const len = 0.07 + Math.random()*0.11;
+      const w = 0.005 + Math.random()*0.005;
+      const geo = new THREE.PlaneGeometry(len, w);
+      const seg = new THREE.Mesh(geo, mat);
+      seg.rotation.z = Math.random() * Math.PI * 2;
+      seg.position.set(
+        (Math.random()-0.5)*0.04,
+        (Math.random()-0.5)*0.04,
+        0
+      );
+      crackGroup.add(seg);
+    }
+    crackGroup.position.copy(localPos);
+    // Orient outward
+    const lookOut = localPos.clone().add(localNormal);
+    crackGroup.lookAt(lookOut);
+    // Push slightly out so crack sits ON the surface
+    crackGroup.position.add(localNormal.clone().multiplyScalar(0.003));
+    eggMesh.add(crackGroup);
+    cracks.push(crackGroup);
+  }
+
+  // ---------- Squash animation ----------
+  let squashT = 0;
+  let squashing = false;
+  function squashEgg() {
+    squashT = 0;
+    squashing = true;
+  }
+  function updateSquash(dt) {
+    if (!squashing) return;
+    squashT += dt;
+    const dur = 0.22;
+    if (squashT >= dur) {
+      eggGroup.scale.set(1, 1, 1);
+      squashing = false;
+      return;
+    }
+    const t = squashT / dur;
+    const s = Math.sin(t * Math.PI);
+    eggGroup.scale.set(1 + s*0.13, 1 - s*0.13, 1 + s*0.13);
+  }
+
+  // ---------- Hit / raycast ----------
+  const raycaster = new THREE.Raycaster();
+  const pointer = new THREE.Vector2();
+
+  function handlePoint(clientX, clientY) {
+    if (!alive) return;
+    pointer.x = (clientX / window.innerWidth) * 2 - 1;
+    pointer.y = -(clientY / window.innerHeight) * 2 + 1;
+    raycaster.setFromCamera(pointer, camera);
+    const hits = raycaster.intersectObject(eggMesh, false);
+    if (hits.length === 0) return;
+
+    const hit = hits[0];
+    const worldPoint = hit.point.clone();
+    const worldNormal = hit.face.normal.clone()
+      .transformDirection(eggMesh.matrixWorld).normalize();
+    const localPoint = eggMesh.worldToLocal(hit.point.clone());
+    const localNormal = hit.face.normal.clone();
+
+    spawnSpurt(worldPoint, worldNormal);
+    spawnCrack(localPoint, localNormal);
+    squashEgg();
+
+    hp--;
+    updateHealthBar();
+    if (hp <= 0) {
+      die(); // plays splat — no crack on the killing blow
+    } else {
+      playHitSound();
+    }
+  }
+
+  renderer.domElement.addEventListener('pointerdown', (e) => {
+    handlePoint(e.clientX, e.clientY);
+  });
+
+  // ---------- Death ----------
+  const debris = [];
+  let yolkPuddle = null;
+  let albuminPuddle = null;
+
+  function die() {
+    alive = false;
+    eggMesh.visible = false;
+
+    // Albumin puddle
+    const aGeo = new THREE.CircleGeometry(1.35, 48);
+    const ap = aGeo.attributes.position;
+    for (let i = 0; i < ap.count; i++) {
+      const x = ap.getX(i), y = ap.getY(i);
+      if (x === 0 && y === 0) continue;
+      const wob = 0.78 + Math.random()*0.42;
+      ap.setX(i, x * wob);
+      ap.setY(i, y * wob);
+    }
+    ap.needsUpdate = true;
+    const aMat = new THREE.MeshStandardMaterial({
+      color: 0xfff5dc,
+      transparent: true, opacity: 0.92,
+      roughness: 0.15, metalness: 0,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2,
+      depthWrite: false
+    });
+    albuminPuddle = new THREE.Mesh(aGeo, aMat);
+    albuminPuddle.rotation.x = -Math.PI/2;
+    albuminPuddle.position.set(0, 0.012, 0);
+    albuminPuddle.scale.set(0.01, 0.01, 0.01);
+    scene.add(albuminPuddle);
+
+    // Yolk dome (hemisphere, slightly squashed)
+    const yGeo = new THREE.SphereGeometry(0.42, 32, 16, 0, Math.PI*2, 0, Math.PI/2);
+    const yMat = new THREE.MeshStandardMaterial({
+      color: 0xff9b1a,
+      emissive: 0x3a1f00, emissiveIntensity: 0.3,
+      roughness: 0.2, metalness: 0
+    });
+    yolkPuddle = new THREE.Mesh(yGeo, yMat);
+    yolkPuddle.position.set(0, 0.018, 0);
+    yolkPuddle.scale.set(0.01, 0.004, 0.01);
+    yolkPuddle.castShadow = true;
+    scene.add(yolkPuddle);
+
+    // Shell fragments
+    const fragCount = 10;
+    for (let i = 0; i < fragCount; i++) {
+      const w = 0.14 + Math.random()*0.12;
+      const h = w * (0.6 + Math.random()*0.5);
+      const geo = new THREE.PlaneGeometry(w, h);
+      const mat = new THREE.MeshStandardMaterial({
+        color: 0xfaf2dd,
+        side: THREE.DoubleSide,
+        roughness: 0.55, metalness: 0.04,
+        map: makeShellTexture()
+      });
+      const m = new THREE.Mesh(geo, mat);
+      const angle = (i / fragCount) * Math.PI * 2 + Math.random()*0.4;
+      m.position.set(
+        Math.cos(angle) * 0.15,
+        EGG_Y + (Math.random() - 0.2) * 0.4,
+        Math.sin(angle) * 0.15
+      );
+      m.rotation.set(Math.random()*Math.PI, Math.random()*Math.PI, Math.random()*Math.PI);
+      m.castShadow = true;
+      scene.add(m);
+      const speed = 2.2 + Math.random()*2.0;
+      const v = new THREE.Vector3(
+        Math.cos(angle) * speed,
+        2.2 + Math.random()*2.0,
+        Math.sin(angle) * speed
+      );
+      const angVel = new THREE.Vector3(
+        (Math.random()-0.5)*9,
+        (Math.random()-0.5)*9,
+        (Math.random()-0.5)*9
+      );
+      debris.push({ mesh: m, vel: v, angVel, settled: false });
+    }
+
+    playSplatSound();
+
+    setTimeout(() => { resetBtn.style.display = 'block'; }, 700);
+  }
+
+  // ---------- Reset ----------
+  function reset() {
+    hp = MAX_HP;
+    alive = true;
+    eggMesh.visible = true;
+
+    cracks.forEach(c => eggMesh.remove(c));
+    cracks.length = 0;
+
+    particles.forEach(p => scene.remove(p.mesh));
+    particles.length = 0;
+
+    splats.forEach(s => scene.remove(s));
+    splats.length = 0;
+
+    debris.forEach(d => scene.remove(d.mesh));
+    debris.length = 0;
+
+    if (albuminPuddle) { scene.remove(albuminPuddle); albuminPuddle = null; }
+    if (yolkPuddle)    { scene.remove(yolkPuddle);    yolkPuddle = null; }
+
+    eggGroup.scale.set(1, 1, 1);
+    squashing = false;
+    resetBtn.style.display = 'none';
+    updateHealthBar();
+  }
+  resetBtn.addEventListener('click', reset);
+
+  // ---------- Sound (Web Audio) ----------
+  // Embedded splat sound (m4a/AAC, base64). Kept in-file so the demo stays
+  // a single self-contained HTML.
+  const SPLAT_SOUND_B64 = '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0nZrAAAAAA0gwAAACYT1ObjWkAAAADSDAAAAqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//sUZOGP8AAAaQcAAAgAAA0g4AABAAABpAAAACAAADSAAAAEqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq';
+
+  let audioCtx;
+  let splatBuffer = null;
+
+  function getAudio() {
+    if (!audioCtx) {
+      try {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        // Decode the embedded MP3 splat sound once; reuse the buffer for all plays.
+        decodeSplatSound();
+      } catch(e) {}
+    }
+    // Browsers may suspend the context after a period of silence or tab
+    // inactivity. Resuming on every play call ensures audio survives across
+    // resets and long sessions.
+    if (audioCtx && audioCtx.state === 'suspended') {
+      audioCtx.resume();
+    }
+    return audioCtx;
+  }
+
+  function decodeSplatSound() {
+    if (splatBuffer || !audioCtx) return;
+    try {
+      const bin = atob(SPLAT_SOUND_B64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      audioCtx.decodeAudioData(
+        bytes.buffer,
+        (buf) => { splatBuffer = buf; },
+        (err) => { console.error('Splat decode failed:', err); }
+      );
+    } catch (e) {
+      console.error('Splat load error:', e);
+    }
+  }
+
+  function playHitSound() {
+    // Eggshell crack: brief band-passed noise burst at high frequency,
+    // plus a tiny tonal click for body. No pitched sweep (no pew).
+    const ctx = getAudio(); if (!ctx) return;
+    const t = ctx.currentTime;
+
+    // Main crack: short noise burst, bandpass'd around 2.5–4 kHz
+    const dur = 0.06;
+    const buf = ctx.createBuffer(1, Math.max(1, Math.floor(ctx.sampleRate * dur)), ctx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) {
+      const fade = 1 - i / d.length;
+      d[i] = (Math.random()*2 - 1) * Math.pow(fade, 3);
+    }
+    const noise = ctx.createBufferSource();
+    noise.buffer = buf;
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.value = 2400 + Math.random() * 1600;
+    bp.Q.value = 1.4;
+    const hp = ctx.createBiquadFilter();
+    hp.type = 'highpass';
+    hp.frequency.value = 1400;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.55, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    noise.connect(bp); bp.connect(hp); hp.connect(g); g.connect(ctx.destination);
+    noise.start(t);
+
+    // Tiny tonal click for shell-body resonance
+    const osc = ctx.createOscillator();
+    osc.type = 'triangle';
+    osc.frequency.value = 1100 + Math.random() * 700;
+    const og = ctx.createGain();
+    og.gain.setValueAtTime(0.07, t);
+    og.gain.exponentialRampToValueAtTime(0.0001, t + 0.022);
+    osc.connect(og); og.connect(ctx.destination);
+    osc.start(t); osc.stop(t + 0.03);
+  }
+
+  function playSplatSound() {
+    // Spawn a fresh BufferSource on each play — they're cheap and one-shot,
+    // which means no state to manage and reliable replay.
+    const ctx = getAudio(); if (!ctx || !splatBuffer) return;
+    const src = ctx.createBufferSource();
+    src.buffer = splatBuffer;
+    const g = ctx.createGain();
+    g.gain.value = 1.0;
+    src.connect(g); g.connect(ctx.destination);
+    src.start();
+  }
+
+  // ---------- Animate ----------
+  const clock = new THREE.Clock();
+  function animate() {
+    requestAnimationFrame(animate);
+    const dt = Math.min(clock.getDelta(), 0.05);
+
+    // Particles
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.vel.y += GRAVITY * dt;
+      p.mesh.position.x += p.vel.x * dt;
+      p.mesh.position.y += p.vel.y * dt;
+      p.mesh.position.z += p.vel.z * dt;
+      if (p.mesh.position.y <= 0.02) {
+        spawnSplat(p.mesh.position.x, p.mesh.position.z, p.type, p.size);
+        scene.remove(p.mesh);
+        particles.splice(i, 1);
+      }
+    }
+
+    // Debris
+    for (const d of debris) {
+      if (d.settled) continue;
+      d.vel.y += GRAVITY * dt;
+      d.mesh.position.x += d.vel.x * dt;
+      d.mesh.position.y += d.vel.y * dt;
+      d.mesh.position.z += d.vel.z * dt;
+      d.mesh.rotation.x += d.angVel.x * dt;
+      d.mesh.rotation.y += d.angVel.y * dt;
+      d.mesh.rotation.z += d.angVel.z * dt;
+      if (d.mesh.position.y <= 0.05) {
+        d.mesh.position.y = 0.05 + Math.random()*0.02;
+        d.vel.set(0, 0, 0);
+        d.angVel.set(0, 0, 0);
+        d.settled = true;
+      }
+    }
+
+    // Puddles grow in
+    if (albuminPuddle && albuminPuddle.scale.x < 1) {
+      const s = Math.min(1, albuminPuddle.scale.x + dt * 1.6);
+      albuminPuddle.scale.set(s, s, s);
+    }
+    if (yolkPuddle && yolkPuddle.scale.x < 1) {
+      const s = Math.min(1, yolkPuddle.scale.x + dt * 1.3);
+      yolkPuddle.scale.set(s, 0.4 * s, s);
+    }
+
+    updateSquash(dt);
+    positionHealthBar();
+    renderer.render(scene, camera);
+  }
+
+  // ---------- Resize ----------
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+
+  // ---------- Init ----------
+  buildHealthBar();
+  updateHealthBar();
+  animate();
+})();
+</script>
+</body>
+</html>
