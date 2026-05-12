@@ -95,7 +95,16 @@
       0 2px 0 rgba(120, 70, 20, 0.25),
       0 10px 22px rgba(0, 0, 0, 0.3);
     user-select: none;
-    pointer-events: none;
+    cursor: pointer;
+    pointer-events: auto;
+    transition: transform 0.18s ease-out, filter 0.18s ease-out;
+  }
+  #title:hover {
+    transform: translateX(-50%) rotate(-2.5deg) scale(1.04);
+    filter: brightness(1.08);
+  }
+  #title:active {
+    transform: translateX(-50%) rotate(-2.5deg) scale(0.98);
   }
   #hud {
     position: absolute;
@@ -391,6 +400,7 @@
   const container = document.getElementById('canvas-container');
   const healthBarEl = document.getElementById('health-bar');
   const resetBtn = document.getElementById('reset-button');
+  const titleEl = document.getElementById('title');
   const hudEl = document.getElementById('hud');
   const shotsNumEl = hudEl.querySelector('.shots-num');
   const timeNumEl = hudEl.querySelector('.time-num');
@@ -1435,6 +1445,7 @@
     updateHealthBar();
   }
   resetBtn.addEventListener('click', reset);
+  titleEl.addEventListener('click', reset);
 
   // ---------- Sound (Web Audio) ----------
   // Embedded splat sound (m4a/AAC, base64). Kept in-file so the demo stays
